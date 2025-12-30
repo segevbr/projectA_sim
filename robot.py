@@ -24,7 +24,7 @@ class RealRobot:
         measured_mm = true_mm + noise
         
         # Clip to sensor limits
-        measured_mm = np.clip(measured_mm, self.min_range_mm, self.max_range_mm)
+        measured_mm = np.clip(measured_mm, self.min_range_mm, self.max_range_mm)#
         
         return true_mm, measured_mm.astype(int)
 

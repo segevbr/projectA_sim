@@ -13,7 +13,7 @@ class RealRobot:
         self.min_range_mm = 1.0
         
     def measure(self, dist_matrix):
-        """Simulates VL53L4CD ToF Sensor readings with noise."""
+        """Simulates VL53L4CD ToF Sensor readings with noise."""#
         # Get grid distance (Cells)
         grid_dist = dist_matrix[self.r, self.c]
         

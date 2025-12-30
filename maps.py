@@ -10,4 +10,4 @@
     # add_h_wall(1,1); add_h_wall(2,1); add_h_wall(1,3); add_h_wall(2,3)
 
     # Mapa mebalbelet
-    #add_h_wall(0,2); add_h_wall(1,2); add_h_wall(2,2); add_h_wall(3,2);
+    #add_h_wall(0,2); add_h_wall(1,2); add_h_wall(2,2); add_h_wall(3,2) ;
