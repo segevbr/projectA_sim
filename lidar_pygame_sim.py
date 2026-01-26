@@ -1,6 +1,7 @@
 import pygame
 import numpy as np
 import math
+import random
 
 # --- CONFIGURATION ---
 MAP_WIDTH = 800
@@ -15,12 +16,17 @@ MAP_ROWS = MAP_HEIGHT // GRID_SIZE
 # Physics / Sensor Config
 CELL_SIZE_MM = 180.0
 PIXELS_PER_MM = GRID_SIZE / CELL_SIZE_MM
-MAX_RANGE_MM = 1300.0
+# Sensor Ranges
+MIN_RANGE_MM = 40.0
+MAX_RANGE_MM = 4000.0
+SENSOR_ACCURACY_MM = 5.0 # Standard Deviation for noise
+# Convert limits to pixels
+MIN_RANGE_PX = MIN_RANGE_MM * PIXELS_PER_MM
 MAX_RANGE_PX = MAX_RANGE_MM * PIXELS_PER_MM
 
 # Angles
-# Shifted so 0 is the center/forward sensor (Old 90 is now 0)
-SENSOR_ANGLES = [-90, -40.33, 0, 37.22, 90] # Relative to robot facing
+# Shifted so 0 is the center/forward sensor (Old 90 is now 0) (0 is east)
+SENSOR_ANGLES = [90, 37.22, 0, -40.33, -90] # Relative to robot facing
 ROTATION_STEP = 45 # Degrees per Q/E press
 
 # Map Wall Indices
@@ -36,6 +42,7 @@ BLUE = (0, 100, 255)
 GREEN = (0, 255, 0)
 RED = (255, 0, 0)
 GRAY = (50, 50, 50)
+CYAN = (0, 255, 255)
 DARK_RED = (100, 0, 0)
 YELLOW = (255, 255, 0)
 SIDEBAR_BG = (30, 30, 30)
@@ -101,11 +108,10 @@ class Robot:
         self.move_to(self.r + dr, self.c + dc)
         return True
 
-    def measure(self, wall_map):
+    def measure(self, wall_map, add_noise=False):
         """
-        Raycasting for Thin Walls.
-        Returns distances in PIXELS.
-        If a sensor is disabled, returns None for that index.
+        Returns distances in MILLIMETERS.
+        add_noise: If True, adds gaussian noise (+- 5mm) to simulate real sensor.
         """
         measurements = []
         hit_points = []
@@ -113,66 +119,66 @@ class Robot:
         robot_angle = self.angle_deg
 
         for i, sensor_angle in enumerate(SENSOR_ANGLES):
-            # Check if sensor is active
             if not self.active_sensors[i]:
                 measurements.append(None)
                 continue
 
-            # Combined angle
             total_angle = (robot_angle + sensor_angle) % 360
             rad = math.radians(total_angle)
             
             dx = math.cos(rad)
-            dy = -math.sin(rad) # Y is inverted in PyGame
+            dy = -math.sin(rad) 
             
             curr_x, curr_y = self.true_x, self.true_y
-            dist_travelled = 0
+            dist_px = 0
             hit = False
             
-            # Ray Marching Steps
             step_size = 2.0 
             
-            while dist_travelled < MAX_RANGE_PX:
+            while dist_px < MAX_RANGE_PX:
                 next_x = curr_x + dx * step_size
                 next_y = curr_y + dy * step_size
                 
-                # Calculate Grid Coords
                 curr_c, curr_r = int(curr_x // GRID_SIZE), int(curr_y // GRID_SIZE)
                 next_c, next_r = int(next_x // GRID_SIZE), int(next_y // GRID_SIZE)
                 
-                # 1. Check Map Bounds
+                # Check Bounds
                 if not (0 <= next_c < MAP_COLS and 0 <= next_r < MAP_ROWS):
                     hit = True
                     break
                 
-                # 2. Check Boundary Crossing (Thin Walls)
-                # Did we cross a vertical grid line?
+                # Check Walls
                 if next_c != curr_c:
-                    # Moving Right
-                    if next_c > curr_c:
-                        if wall_map[curr_r, curr_c, WALL_RIGHT] == 0:
-                            hit = True; break
-                    # Moving Left
-                    else:
-                        if wall_map[curr_r, curr_c, WALL_LEFT] == 0:
-                            hit = True; break
-                            
-                # Did we cross a horizontal grid line?
+                    if next_c > curr_c: # Right
+                        if wall_map[curr_r, curr_c, WALL_RIGHT] == 0: hit = True; break
+                    else: # Left
+                        if wall_map[curr_r, curr_c, WALL_LEFT] == 0: hit = True; break     
                 if next_r != curr_r:
-                    # Moving Down
-                    if next_r > curr_r:
-                        if wall_map[curr_r, curr_c, WALL_DOWN] == 0:
-                            hit = True; break
-                    # Moving Up
-                    else:
-                        if wall_map[curr_r, curr_c, WALL_UP] == 0:
-                            hit = True; break
+                    if next_r > curr_r: # Down
+                        if wall_map[curr_r, curr_c, WALL_DOWN] == 0: hit = True; break
+                    else: # Up
+                        if wall_map[curr_r, curr_c, WALL_UP] == 0: hit = True; break
                 
-                # Update
                 curr_x, curr_y = next_x, next_y
-                dist_travelled += step_size
+                dist_px += step_size
                 
-            measurements.append(dist_travelled)
+            # --- CONVERSION TO MM ---
+            dist_mm = dist_px / PIXELS_PER_MM
+            
+            # Simulate Sensor Limits
+            if dist_mm < MIN_RANGE_MM:
+                dist_mm = MIN_RANGE_MM
+            elif dist_mm > MAX_RANGE_MM:
+                dist_mm = MAX_RANGE_MM
+            
+            # Simulate Noise (Only if requested)
+            if add_noise and hit:
+                # Add noise from Normal Distribution (mean=dist, sigma=5mm)
+                dist_mm = random.gauss(dist_mm, SENSOR_ACCURACY_MM)
+                # Clamp again just in case noise pushed it out
+                dist_mm = max(MIN_RANGE_MM, min(dist_mm, MAX_RANGE_MM))
+
+            measurements.append(dist_mm)
             hit_points.append((curr_x, curr_y))
             
         return measurements, hit_points
@@ -202,17 +208,12 @@ def generate_wall_map():
     maze[:, 0, WALL_LEFT] = 0
     maze[:, -1, WALL_RIGHT] = 0
     
-    # Custom Walls (Example Layout)
-    # A box in the top left
-    set_v_wall(2, 2); set_v_wall(3, 2)
-    set_h_wall(3, 2); set_h_wall(3, 3)
-    
-    # A long wall in the middle
-    for i in range(5, 15):
-        set_h_wall(8, i)
-        
-    # Some random partitions
-    set_v_wall(5, 10); set_v_wall(6, 10)
+    # Alon House map
+    for i in range(0,9):
+        set_h_wall(2, i)
+
+    for i in range(0,3):
+        set_v_wall(i, 8)
     
     return maze
 
@@ -245,18 +246,44 @@ def precompute_all_orientations(wall_map):
     print("Pre-computation Complete.")
     return data
 
+# Debugging Function to Dump Map Data to console
+def dump_selected_cells(data, selected_cells):
+    print("\n=== SELECTED CELLS DUMP (PYTHON) ===")
+    
+    # Sort selected cells by row then col for cleaner output
+    # selected_cells is set of (py_r, py_c)
+    sorted_cells = sorted(list(selected_cells), key=lambda x: (x[0], x[1]))
+
+    for (py_r, c) in sorted_cells:
+        # Calculate C++ Row equivalent for display
+        cpp_r = MAP_ROWS - 1 - py_r
+        
+        print(f"Cell ({py_r}, {c}):")
+        for a in range(8):
+            d = data[py_r, c, a]
+            vals = ", ".join([f"{x:6.1f}" for x in d])
+            print(f"  Angle {a} ({a*45:3d}°): {{ {vals} }},")
+    print("=== END DUMP ===\n")
+
 def update_probability(prob_matrix, measured_dists, expected_data, current_angle_idx):
     """
     Bayes Update using the slice of expected data corresponding 
     to the robot's current rotation.
+    Note on Sigma: 
+    While the sensor is accurate to +-5mm, the grid quantization error is large.
+    (A cell is 180mm wide). If we use sigma=5mm, the filter will break because
+    being 10mm off-center would yield 0 probability.
+    We use a larger sigma to account for 'Map Discretization Error'.
     """
     rows, cols = prob_matrix.shape
     new_prob = np.zeros_like(prob_matrix)
-    sigma = 30.0 # Pixels
+    
+    # Sigma: Combines sensor noise (5mm) + Grid approximation error (~90mm)
+    sigma = 100.0 # mm
     
     for r in range(rows):
         for c in range(cols):
-            if prob_matrix[r, c] < 0.00001: continue
+            if prob_matrix[r, c] < 0.00001: continue # Skip negligible probs
             
             # Fetch expectations for the CURRENT angle
             expected_dists = expected_data[r, c, current_angle_idx]
@@ -273,9 +300,9 @@ def update_probability(prob_matrix, measured_dists, expected_data, current_angle
                 mu = expected_dists[i]
                 
                 # If we expect to hit a wall instantly (0 dist), avoid bad math
-                if mu < 1: mu = 1
+                if mu < MIN_RANGE_MM: mu = MIN_RANGE_MM
                 
-                # Gaussian
+                # Gaussian likelihood
                 p = np.exp(-((z - mu) ** 2) / (2 * sigma ** 2))
                 likelihood *= p
             
@@ -290,10 +317,14 @@ def update_probability(prob_matrix, measured_dists, expected_data, current_angle
     return new_prob
 
 def predict_motion(prob_matrix, dr, dc, wall_map):
-    """Shift probabilities"""
+    """
+    Shift probabilities based on motion (dr, dc).
+    Includes a Blur step that correctly handles map borders.
+    """
     rows, cols = prob_matrix.shape
     new_prob = np.zeros_like(prob_matrix)
     
+    # 1. Shift Step
     for r in range(rows):
         for c in range(cols):
             if prob_matrix[r, c] > 0.0001:
@@ -311,16 +342,38 @@ def predict_motion(prob_matrix, dr, dc, wall_map):
                 else:
                     new_prob[r, c] += prob_matrix[r, c]
 
-    # Blur
-    kernel = np.array([[0.05, 0.1, 0.05], [0.1, 0.4, 0.1], [0.05, 0.1, 0.05]])
+    # 2. Blur Step (Scatter Method - Handles Borders Correctly)
     blurred = np.zeros_like(new_prob)
-    for r in range(1, rows-1):
-        for c in range(1, cols-1):
-            patch = new_prob[r-1:r+2, c-1:c+2]
-            blurred[r,c] = np.sum(patch * kernel)
+    
+    # Iterate over every source cell
+    for r in range(rows):
+        for c in range(cols):
+            val = new_prob[r, c]
+            if val < 1e-9: continue
             
-    s = np.sum(blurred)
-    if s > 0: blurred /= s
+            # Distribute this cell's mass to its 3x3 neighbors
+            # Kernel Weights:
+            # 0.05  0.10  0.05
+            # 0.10  0.40  0.10
+            # 0.05  0.10  0.05
+            
+            for dr_k in [-1, 0, 1]:
+                for dc_k in [-1, 0, 1]:
+                    nr, nc = r + dr_k, c + dc_k
+                    
+                    # Only add if neighbor is within map bounds
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        weight = 0.05
+                        if dr_k == 0 and dc_k == 0: weight = 0.40
+                        elif dr_k == 0 or dc_k == 0: weight = 0.10
+                        
+                        blurred[nr, nc] += val * weight
+            
+    # Normalize (Recover lost mass from edges)
+    total_sum = np.sum(blurred)
+    if total_sum > 0:
+        blurred /= total_sum
+        
     return blurred
 
 def toggle_wall_click(wall_map, mx, my):
@@ -331,8 +384,7 @@ def toggle_wall_click(wall_map, mx, my):
     if not (0 <= mx < MAP_WIDTH and 0 <= my < MAP_HEIGHT):
         return
 
-    c = mx // GRID_SIZE
-    r = my // GRID_SIZE
+    c, r = mx // GRID_SIZE, my // GRID_SIZE
     
     # Calculate offset within the cell
     lx = mx % GRID_SIZE
@@ -380,7 +432,7 @@ def toggle_wall_click(wall_map, mx, my):
 def main():
     pygame.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
-    pygame.display.set_caption("Lidar Sim: WASD=Move, QE=Rotate, B=Builder Mode")
+    pygame.display.set_caption("Lidar Sim: WASD=Move, QE=Rotate, B=Builder Mode, P=Analysis Mode")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18)
     small_font = pygame.font.SysFont("Arial", 14)
@@ -395,7 +447,11 @@ def main():
     
     robot = Robot(3, 3)
     
+    analysis_mode = False
+    selected_cells = set() 
     building_mode = False
+    
+    def to_cpp_row(py_r): return MAP_ROWS - 1 - py_r
 
     running = True
     while running:
@@ -411,13 +467,26 @@ def main():
                 
                 # Only handle clicks within the map area
                 if mx < MAP_WIDTH:
-                    if building_mode:
+                    # PRIORITY 1: Analysis Mode Selection
+                    if analysis_mode:
+                        c, r = mx // GRID_SIZE, my // GRID_SIZE
+                        if 0 <= c < MAP_COLS and 0 <= r < MAP_ROWS:
+                            coord = (r, c)
+                            if coord in selected_cells:
+                                selected_cells.remove(coord)
+                            else:
+                                selected_cells.add(coord)
+                                
+                    # PRIORITY 2: Builder Mode
+                    elif building_mode:
                         toggle_wall_click(wall_map, mx, my)
+                        
+                    # PRIORITY 3: Teleport (Simulation Mode)
                     else:
-                        # Teleport
                         c, r = mx // GRID_SIZE, my // GRID_SIZE
                         if 0 <= c < MAP_COLS and 0 <= r < MAP_ROWS:
                             robot.move_to(r, c)
+                            # Reset probability on teleport
                             prob_matrix.fill(1.0 / (MAP_ROWS*MAP_COLS))
             
             elif event.type == pygame.KEYDOWN:
@@ -433,8 +502,27 @@ def main():
                         
                         expected_data = precompute_all_orientations(wall_map)
                         prob_matrix.fill(1.0 / (MAP_ROWS*MAP_COLS))
+                        
+                # Toggle Analysis Mode
+                if event.key == pygame.K_p and not building_mode:
+                    if analysis_mode:
+                        # Exiting: Dump and Clear
+                        print("\n--- EXITING ANALYSIS MODE ---")
+                        if selected_cells:
+                            dump_selected_cells(expected_data, selected_cells)
+                        else:
+                            print("No cells selected.")
+                        selected_cells.clear()
+                        analysis_mode = False
+                    else:
+                        # Entering
+                        analysis_mode = True
+                        print("\n--- ANALYSIS MODE STARTED ---")
+                        print("1. Click cells on the map to mark them (Cyan).")
+                        print("2. Press 'P' again to dump their distance data to console.")
                 
-                if not building_mode:
+                # Robot Movement (Only if not building and not analyzing)
+                if not building_mode and not analysis_mode:
                     if event.key == pygame.K_w:   dr, dc = -1, 0
                     elif event.key == pygame.K_s: dr, dc = 1, 0
                     elif event.key == pygame.K_a: dr, dc = 0, -1
@@ -454,7 +542,7 @@ def main():
                     if dr != 0 or dc != 0:
                         if robot.move_rel(dr, dc, wall_map):
                             moved = True
-
+        
         # Logic
         if not building_mode:
             if moved:
@@ -463,7 +551,6 @@ def main():
             dists, hit_points = robot.measure(wall_map)
             prob_matrix = update_probability(prob_matrix, dists, expected_data, robot.angle_index)
         else:
-            # In builder mode, we can still show robot/rays, but no physics updates
             dists, hit_points = robot.measure(wall_map)
 
         # Draw
@@ -475,7 +562,7 @@ def main():
                 rect = (c*GRID_SIZE, r*GRID_SIZE, GRID_SIZE, GRID_SIZE)
                 
                 # Draw Prob (Only in Sim Mode)
-                if not building_mode:
+                if not building_mode and not analysis_mode:
                     p = prob_matrix[r, c]
                     b = min(int(p * 5000), 255)
                     if b > 10:
@@ -488,8 +575,12 @@ def main():
                 grid_col = (60, 60, 0) if building_mode else (30, 30, 30)
                 pygame.draw.rect(screen, grid_col, rect, 1)
                 
+                # Highlight selected cells in analysis mode
+                if analysis_mode and (r, c) in selected_cells:
+                    pygame.draw.rect(screen, CYAN, rect) 
+                    # If selected, we don't fill with prob color, just cyan
+                
                 # Draw Walls (Red Lines)
-                # Make walls thicker in builder mode to see easier
                 w_thick = 4 if building_mode else 2
                 
                 if wall_map[r, c, WALL_UP] == 0:
@@ -501,7 +592,12 @@ def main():
                 if wall_map[r, c, WALL_RIGHT] == 0:
                     pygame.draw.line(screen, RED, ((c+1)*GRID_SIZE, r*GRID_SIZE), ((c+1)*GRID_SIZE, (r+1)*GRID_SIZE), w_thick)
 
-        # Robot & Rays
+        # --- Draw Analysis Border ---
+        if analysis_mode:
+            # Draw a thick Blue border around the map area
+            pygame.draw.rect(screen, BLUE, (0, 0, MAP_WIDTH, MAP_HEIGHT), 5)
+
+        # Robot & Rays (Draw these even in analysis mode for reference, but maybe lighter?)
         pygame.draw.circle(screen, BLUE, (int(robot.true_x), int(robot.true_y)), 10)
         head_rad = math.radians(robot.angle_deg)
         head_x = robot.true_x + math.cos(head_rad) * 15
@@ -522,14 +618,27 @@ def main():
         y_off = 10
         
         # Mode Status
-        mode_txt = "BUILDER MODE" if building_mode else "SIMULATION MODE"
-        mode_col = YELLOW if building_mode else GREEN
+        if analysis_mode:
+            mode_txt = "ANALYSIS MODE"
+            mode_col = CYAN
+        elif building_mode:
+            mode_txt = "BUILDER MODE"
+            mode_col = YELLOW
+        else:
+            mode_txt = "SIMULATION MODE"
+            mode_col = GREEN
+            
         screen.blit(font.render(mode_txt, True, mode_col), (x_start, y_off)); y_off += 30
         
         screen.blit(font.render("CONTROLS", True, GREEN), (x_start, y_off)); y_off += 25
-        screen.blit(small_font.render("B: Toggle Builder/Sim", True, WHITE), (x_start, y_off)); y_off += 20
+        screen.blit(small_font.render("B: Toggle Builder", True, WHITE), (x_start, y_off)); y_off += 20
+        screen.blit(small_font.render("P: Toggle Analysis", True, WHITE), (x_start, y_off)); y_off += 20
+        
         if building_mode:
-            screen.blit(small_font.render("Click Edges: Toggle Wall", True, YELLOW), (x_start, y_off)); y_off += 30
+             screen.blit(small_font.render("Click Edges: Toggle Wall", True, YELLOW), (x_start, y_off)); y_off += 30
+        elif analysis_mode:
+             screen.blit(small_font.render("Click Cells: Select/Deselect", True, CYAN), (x_start, y_off)); y_off += 20
+             screen.blit(small_font.render("Press P again to Dump Data", True, CYAN), (x_start, y_off)); y_off += 30
         else:
             screen.blit(small_font.render("WASD: Move  |  Q/E: Rotate", True, WHITE), (x_start, y_off)); y_off += 20
             screen.blit(small_font.render("Mouse: Teleport", True, WHITE), (x_start, y_off)); y_off += 30
@@ -550,7 +659,7 @@ def main():
         # Top Estimates
         screen.blit(font.render("Top Probable Locs:", True, GREEN), (x_start, y_off)); y_off += 25
         
-        if not building_mode:
+        if not building_mode and not analysis_mode:
             # Flatten and sort probabilities
             flat_indices = np.argsort(prob_matrix.ravel())[::-1]
             
@@ -574,6 +683,8 @@ def main():
                 screen.blit(small_font.render(text_str, True, color), (x_start, y_off))
                 y_off += 20
                 count += 1
+        elif analysis_mode:
+            screen.blit(small_font.render(f"Selected: {len(selected_cells)}", True, CYAN), (x_start, y_off))
         else:
              screen.blit(small_font.render("Paused...", True, GRAY), (x_start, y_off))
             
