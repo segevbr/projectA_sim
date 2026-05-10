@@ -17,16 +17,16 @@ MAP_ROWS = MAP_HEIGHT // GRID_SIZE
 CELL_SIZE_MM = 180.0
 PIXELS_PER_MM = GRID_SIZE / CELL_SIZE_MM
 # Sensor Ranges
-MIN_RANGE_MM = 40.0
-MAX_RANGE_MM = 4000.0
-SENSOR_ACCURACY_MM = 5.0 # Standard Deviation for noise
+MIN_RANGE_MM = 1.0
+MAX_RANGE_MM = 1300.0
+SENSOR_ACCURACY_MM = 1.0 # Standard Deviation for noise
 # Convert limits to pixels
 MIN_RANGE_PX = MIN_RANGE_MM * PIXELS_PER_MM
 MAX_RANGE_PX = MAX_RANGE_MM * PIXELS_PER_MM
 
 # Angles
-# Shifted so 0 is the center/forward sensor (Old 90 is now 0) (0 is east)
-SENSOR_ANGLES = [90, 37.22, 0, -40.33, -90] # Relative to robot facing
+# 0 is east, angle grows clockwise 
+SENSOR_ANGLES = [-90, -40.33, 0, 37.22, 90] # Relative to robot facing
 ROTATION_STEP = 45 # Degrees per Q/E press
 
 # Map Wall Indices
@@ -66,7 +66,11 @@ class Robot:
         return self.angle_index * ROTATION_STEP
 
     def rotate(self, direction):
-        """ direction: +1 (Left/Q), -1 (Right/E) """
+        """ 
+        direction: 
+        +1 (Clockwise/Right)
+        -1 (Counter-Clockwise/Left)
+        """
         self.angle_index = (self.angle_index + direction) % 8
 
     def toggle_sensor(self, idx):
@@ -111,7 +115,7 @@ class Robot:
     def measure(self, wall_map, add_noise=False):
         """
         Returns distances in MILLIMETERS.
-        add_noise: If True, adds gaussian noise (+- 5mm) to simulate real sensor.
+        add_noise: If True, adds gaussian noise (+- 1mm) to simulate real sensor.
         """
         measurements = []
         hit_points = []
@@ -127,7 +131,7 @@ class Robot:
             rad = math.radians(total_angle)
             
             dx = math.cos(rad)
-            dy = -math.sin(rad) 
+            dy = math.sin(rad) 
             
             curr_x, curr_y = self.true_x, self.true_y
             dist_px = 0
@@ -261,7 +265,7 @@ def dump_selected_cells(data, selected_cells):
         print(f"Cell ({py_r}, {c}):")
         for a in range(8):
             d = data[py_r, c, a]
-            vals = ", ".join([f"{x:6.1f}" for x in d])
+            vals = ", ".join([f"{x:6.2f}" for x in d/1000]) # Convert to meters for display
             print(f"  Angle {a} ({a*45:3d}°): {{ {vals} }},")
     print("=== END DUMP ===\n")
 
@@ -278,8 +282,8 @@ def update_probability(prob_matrix, measured_dists, expected_data, current_angle
     rows, cols = prob_matrix.shape
     new_prob = np.zeros_like(prob_matrix)
     
-    # Sigma: Combines sensor noise (5mm) + Grid approximation error (~90mm)
-    sigma = 100.0 # mm
+    # Sigma: Combines sensor noise (1mm)
+    sigma = 20.0 # mm
     
     for r in range(rows):
         for c in range(cols):
@@ -528,9 +532,9 @@ def main():
                     elif event.key == pygame.K_a: dr, dc = 0, -1
                     elif event.key == pygame.K_d: dr, dc = 0, 1
                     elif event.key == pygame.K_q: 
-                        robot.rotate(1) # Left
+                        robot.rotate(-1) # Left - decrease angle (CW)
                     elif event.key == pygame.K_e: 
-                        robot.rotate(-1) # Right
+                        robot.rotate(1) # Right - increase angle (CW)
                     
                     # Sensor Toggling (1-5)
                     elif event.key == pygame.K_1: robot.toggle_sensor(0)
@@ -601,7 +605,7 @@ def main():
         pygame.draw.circle(screen, BLUE, (int(robot.true_x), int(robot.true_y)), 10)
         head_rad = math.radians(robot.angle_deg)
         head_x = robot.true_x + math.cos(head_rad) * 15
-        head_y = robot.true_y - math.sin(head_rad) * 15
+        head_y = robot.true_y + math.sin(head_rad) * 15 # Flipped for CW
         pygame.draw.line(screen, WHITE, (robot.true_x, robot.true_y), (head_x, head_y), 2)
         
         for p in hit_points:
